@@ -2,17 +2,19 @@ Request = require "perf"
 
 -- demo code for big requests
 local req
+local uri = ""
+local method = ""
+local file = {
+    name = "",
+    filename = "",
+    path = ""
+}
 
 function request()
-    local file = {
-        name = "file",
-        filename = "av",
-        path = "/Users/yangxin/Downloads/av.mp4"
-    }
     if req == nil then
         req = Request.new(true)
-        req:set_uri("/upload")
-        req:set_method("POST")
+        req:set_uri(uri)
+        req:set_method(method)
         req:set_form_body({ file = file })
     end
 
