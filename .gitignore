@@ -1,2 +1,5 @@
 obj/
 wrk
+.idea
+cmake-build-debug
+CMakeLists.txt
