@@ -35,6 +35,7 @@ typedef struct {
 
 static int wrk_buffer_new(lua_State *);
 static int wrk_buffer_append(lua_State *);
+static int wrk_buffer_dup(lua_State *);
 static int wrk_buffer_used(lua_State *);
 static int wrk_buffer_release(lua_State *);
 static int wrk_buffer_tostring(lua_State *);
@@ -65,6 +66,7 @@ static const struct luaL_Reg buffer_funcs[] = {
 
 static const struct luaL_Reg buffer_methods[] = {
     {"append",     wrk_buffer_append      },
+    {"dup",        wrk_buffer_dup         },
     {"size",       wrk_buffer_used        },
     {"__len",      wrk_buffer_used        },
     {"__gc",       wrk_buffer_release     },
@@ -150,6 +152,27 @@ static int wrk_buffer_append(lua_State *L) {
     }
 
     return 0;
+}
+
+static int wrk_buffer_dup(lua_State *L) {
+    wrk_buffer *buf;
+    wrk_buffer *dup;
+
+    buf = (wrk_buffer *) luaL_checkudata(L, 1, "wrk.buffer");
+    lua_assert(buf->data != NULL);
+    if (buf->moved) {
+        lua_pushnil(L);
+    } else {
+        dup = (wrk_buffer *) lua_newuserdata(L, sizeof(wrk_buffer));
+        memcpy(dup, buf, sizeof(wrk_buffer));
+        dup->data = (char *) malloc(buf->cap);
+        if (dup->data == NULL) {
+            return luaL_error(L, "malloc wrk.buffer failed");
+        }
+        memcpy(dup->data, buf->data, buf->cap);
+    }
+
+    return 1;
 }
 
 static int wrk_buffer_used(lua_State *L) {
