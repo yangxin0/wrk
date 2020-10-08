@@ -27,8 +27,8 @@ static void set_field(lua_State *, int, char *, int);
 static int push_url_part(lua_State *, char *, struct http_parser_url *, enum http_parser_url_fields);
 
 typedef struct {
-    int cap;
-    int used;
+    size_t cap;
+    size_t used;
     int moved; /* data was moved */
     char *data;
 } wrk_buffer;
@@ -88,7 +88,7 @@ static void script_create_buffer(lua_State *L) {
 }
 
 static int wrk_buffer_new(lua_State *L) {
-    int cap;
+    size_t cap;
     wrk_buffer *buf;
 
     cap = luaL_checkint(L, 1);
@@ -108,8 +108,8 @@ static int wrk_buffer_new(lua_State *L) {
     return 1;
 }
 
-static int wrk_buffer_append_buf(wrk_buffer *buf, const char *str, int size) {
-    int cap;
+static int wrk_buffer_append_buf(wrk_buffer *buf, const char *str, size_t size) {
+    size_t cap;
     char *data;
 
     cap = buf->cap;
@@ -140,12 +140,16 @@ static int wrk_buffer_append(lua_State *L) {
     switch(lua_type(L, 2)) {
         case LUA_TSTRING:
             str = luaL_checklstring(L, 2, &size);
-            wrk_buffer_append_buf(buf, str, size);
+            if (wrk_buffer_append_buf(buf, str, size) < 0) {
+                return luaL_error(L, "realloc wrk.buffer failed");
+            }
             break;
         case LUA_TUSERDATA:
             arg = (wrk_buffer *)luaL_checkudata(L, 2, "wrk.buffer");
             lua_assert(arg->data != NULL);
-            wrk_buffer_append_buf(buf, arg->data, arg->used);
+            if (wrk_buffer_append_buf(buf, arg->data, arg->used) < 0) {
+                return luaL_error(L, "realloc wrk.buffer failed");
+            }
             break;
         default:
             return luaL_error(L, "append accepts string or wrk.buffer only");
@@ -192,9 +196,10 @@ static int wrk_buffer_release(lua_State *L) {
     lua_assert(buf->data != NULL);
     if (!buf->moved) {
         free(buf->data);
+        buf->data = NULL;
         buf->cap = -1;
         buf->used = -1;
-        buf->moved = -1;
+        buf->moved = 1;
     }
 
     return 0;
@@ -337,7 +342,7 @@ void script_request(lua_State *L, char **buf, size_t *len) {
             break;
         case LUA_TUSERDATA:
             wbuf = (wrk_buffer *)luaL_checkudata(L, -1, "wrk.buffer");
-            lua_assert(tmp->data != NULL);
+            lua_assert(wbuf->data != NULL && wbuf->moved != 1);
             wbuf->moved = 1;
             *buf = wbuf->data;
             *len = wbuf->used;
