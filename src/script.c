@@ -26,6 +26,19 @@ static void set_fields(lua_State *, int, const table_field *);
 static void set_field(lua_State *, int, char *, int);
 static int push_url_part(lua_State *, char *, struct http_parser_url *, enum http_parser_url_fields);
 
+typedef struct {
+    int cap;
+    int used;
+    int moved; /* data was moved */
+    char *data;
+} wrk_buffer;
+
+static int wrk_buffer_new(lua_State *);
+static int wrk_buffer_append(lua_State *);
+static int wrk_buffer_used(lua_State *);
+static int wrk_buffer_release(lua_State *);
+static int wrk_buffer_tostring(lua_State *);
+
 static const struct luaL_Reg addrlib[] = {
     { "__tostring", script_addr_tostring   },
     { "__gc"    ,   script_addr_gc         },
@@ -45,10 +58,141 @@ static const struct luaL_Reg threadlib[] = {
     { NULL,         NULL                   }
 };
 
+static const struct luaL_Reg buffer_funcs[] = {
+    {"buffer",      wrk_buffer_new         },
+    {NULL,          NULL                  }
+};
+
+static const struct luaL_Reg buffer_methods[] = {
+    {"append",     wrk_buffer_append      },
+    {"size",       wrk_buffer_used        },
+    {"__len",      wrk_buffer_used        },
+    {"__gc",       wrk_buffer_release     },
+    {"__tostring", wrk_buffer_tostring    },
+    {NULL,          NULL                  }
+};
+
+static void script_create_buffer(lua_State *L) {
+    /* metatable.__index = metatable */
+    luaL_newmetatable(L, "wrk.buffer");
+    lua_pushvalue(L, -1); /* duplicate the metatable */
+    lua_setfield(L, -2, "__index");
+    luaL_setfuncs(L, buffer_methods, 0);
+
+    lua_getglobal(L, "wrk");
+    luaL_setfuncs(L, buffer_funcs, 0);
+
+    lua_pop(L, 2);
+}
+
+static int wrk_buffer_new(lua_State *L) {
+    int cap;
+    wrk_buffer *buf;
+
+    cap = luaL_checkint(L, 1);
+    luaL_argcheck(L, cap > 0, 1, "invalid initial capacity");
+    buf = (wrk_buffer *)lua_newuserdata(L, sizeof(wrk_buffer));
+    buf->data = (char *) malloc(cap);
+    if (buf->data == NULL) {
+        return luaL_error(L, "alloc wrk_buffer failed");
+    }
+    buf->cap = cap;
+    buf->used = 0;
+    buf->moved = 0;
+
+    luaL_getmetatable(L, "wrk.buffer");
+    lua_setmetatable(L, -2);
+
+    return 1;
+}
+
+static int wrk_buffer_append_buf(wrk_buffer *buf, const char *str, int size) {
+    int cap;
+    char *data;
+
+    cap = buf->cap;
+    while (size > buf->cap - buf->used) {
+        buf->cap *= 2;
+    }
+    data = realloc(buf->data, buf->cap);
+    if (data == NULL) {
+        /* restore original cap */
+        buf->cap = cap;
+        return -1;
+    }
+    buf->data = data;
+    strncpy(buf->data + buf->used, str, size);
+    buf->used += size;
+
+    return size;
+}
+
+static int wrk_buffer_append(lua_State *L) {
+    wrk_buffer *buf;
+    const char *str;
+    size_t size;
+    wrk_buffer *arg;
+
+    buf = (wrk_buffer *) luaL_checkudata(L, 1, "wrk.buffer");
+    lua_assert(buf->data != NULL);
+    switch(lua_type(L, 2)) {
+        case LUA_TSTRING:
+            str = luaL_checklstring(L, 2, &size);
+            wrk_buffer_append_buf(buf, str, size);
+            break;
+        case LUA_TUSERDATA:
+            arg = (wrk_buffer *)luaL_checkudata(L, 2, "wrk.buffer");
+            lua_assert(arg->data != NULL);
+            wrk_buffer_append_buf(buf, arg->data, arg->used);
+            break;
+        default:
+            return luaL_error(L, "append accepts string or wrk.buffer only");
+    }
+
+    return 0;
+}
+
+static int wrk_buffer_used(lua_State *L) {
+    wrk_buffer *buf;
+
+    buf = (wrk_buffer *) luaL_checkudata(L, 1, "wrk.buffer");
+    lua_assert(buf->data != NULL);
+    lua_pushinteger(L, buf->used);
+
+    return 1;
+}
+
+static int wrk_buffer_release(lua_State *L) {
+    wrk_buffer  *buf;
+
+    buf = (wrk_buffer *)luaL_checkudata(L, 1, "wrk.buffer");
+    lua_assert(buf->data != NULL);
+    if (!buf->moved) {
+        free(buf->data);
+        buf->cap = -1;
+        buf->used = -1;
+        buf->moved = -1;
+    }
+
+    return 0;
+}
+
+static int wrk_buffer_tostring(lua_State *L) {
+    wrk_buffer *buf;
+
+    buf = (wrk_buffer *)luaL_checkudata(L, 1, "wrk.buffer");
+    lua_assert(buf->data != NULL);
+    lua_pushfstring(L, "buffer(cap %d, used %d, moved %d)", buf->cap, buf->used, buf->moved);
+
+    return 1;
+}
+
 lua_State *script_create(char *file, char *url, char **headers) {
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
     (void) luaL_dostring(L, "wrk = require \"wrk\"");
+
+    script_create_buffer(L);
 
     luaL_newmetatable(L, "wrk.addr");
     luaL_register(L, NULL, addrlib);
@@ -150,7 +294,10 @@ uint64_t script_delay(lua_State *L) {
 }
 
 void script_request(lua_State *L, char **buf, size_t *len) {
+    const char *str;
+    wrk_buffer *wbuf;
     int pop = 1;
+
     lua_getglobal(L, "request");
     if (!lua_isfunction(L, -1)) {
         lua_getglobal(L, "wrk");
@@ -158,9 +305,24 @@ void script_request(lua_State *L, char **buf, size_t *len) {
         pop += 2;
     }
     lua_call(L, 0, 1);
-    const char *str = lua_tolstring(L, -1, len);
-    *buf = realloc(*buf, *len);
-    memcpy(*buf, str, *len);
+
+    switch(lua_type(L, -1)) {
+        case LUA_TSTRING:
+            str = lua_tolstring(L, -1, len);
+            *buf = realloc(*buf, *len);
+            memcpy(*buf, str, *len);
+            break;
+        case LUA_TUSERDATA:
+            wbuf = (wrk_buffer *)luaL_checkudata(L, -1, "wrk.buffer");
+            lua_assert(tmp->data != NULL);
+            wbuf->moved = 1;
+            *buf = wbuf->data;
+            *len = wbuf->used;
+            break;
+        default:
+            fprintf(stderr, "request must return string or wrk.buffer\n");
+            exit(-1);
+    }
     lua_pop(L, pop);
 }
 
