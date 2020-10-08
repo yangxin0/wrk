@@ -61,7 +61,7 @@ local RequestIndex = {
             error(string.format("%s is not avaiable", file.path))
         end
         while true do
-            local tmp = fin:read(1024)
+            local tmp = fin:read(1024 * 128)
             if tmp then
                 self.buf:append(tmp)
             else
