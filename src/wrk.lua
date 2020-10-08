@@ -58,7 +58,9 @@ function wrk.format(method, path, headers, body)
       headers["Host"] = wrk.headers["Host"]
    end
 
-   headers["Content-Length"] = body and string.len(body)
+   if headers["Content-Length"] == nil then
+      headers["Content-Length"] = body and string.len(body)
+   end
 
    s[1] = string.format("%s %s HTTP/1.1", method, path)
    for name, value in pairs(headers) do
