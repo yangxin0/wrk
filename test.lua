@@ -1,22 +1,24 @@
 Request = require "perf"
 
--- demo code for big requests
-local req
-local uri = ""
-local method = ""
+-- demo code for upload big file
+local uri = "/upload"
+local method = "POST"
 local file = {
-    name = "",
-    filename = "",
-    path = ""
+    name = "file",
+    filename = "LICENSE",
+    path = "./LICENSE"
 }
 
+-- cache buf and reuse
+local buf
+
 function request()
-    if req == nil then
-        req = Request.new(true)
+    if buf == nil then
+        local req = Request.new(true)
         req:set_uri(uri)
         req:set_method(method)
         req:set_form_body({ file = file })
+        buf = req:serialize()
     end
-
-    return req:serialize()
+    return buf
 end
