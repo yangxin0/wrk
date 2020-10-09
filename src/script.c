@@ -5,6 +5,7 @@
 #include "script.h"
 #include "http_parser.h"
 #include "zmalloc.h"
+#include "assert.h"
 
 typedef struct {
     char *name;
@@ -29,7 +30,6 @@ static int push_url_part(lua_State *, char *, struct http_parser_url *, enum htt
 typedef struct {
     size_t cap;
     size_t used;
-    int moved; /* data was moved */
     char *data;
 } wrk_buffer;
 
@@ -100,7 +100,6 @@ static int wrk_buffer_new(lua_State *L) {
     }
     buf->cap = cap;
     buf->used = 0;
-    buf->moved = 0;
 
     luaL_getmetatable(L, "wrk.buffer");
     lua_setmetatable(L, -2);
@@ -136,7 +135,7 @@ static int wrk_buffer_append(lua_State *L) {
     wrk_buffer *arg;
 
     buf = (wrk_buffer *) luaL_checkudata(L, 1, "wrk.buffer");
-    lua_assert(buf->data != NULL);
+    assert(buf->data != NULL);
     switch(lua_type(L, 2)) {
         case LUA_TSTRING:
             str = luaL_checklstring(L, 2, &size);
@@ -146,7 +145,7 @@ static int wrk_buffer_append(lua_State *L) {
             break;
         case LUA_TUSERDATA:
             arg = (wrk_buffer *)luaL_checkudata(L, 2, "wrk.buffer");
-            lua_assert(arg->data != NULL);
+            assert(arg->data != NULL);
             if (wrk_buffer_append_buf(buf, arg->data, arg->used) < 0) {
                 return luaL_error(L, "realloc wrk.buffer failed");
             }
@@ -163,18 +162,15 @@ static int wrk_buffer_dup(lua_State *L) {
     wrk_buffer *dup;
 
     buf = (wrk_buffer *) luaL_checkudata(L, 1, "wrk.buffer");
-    lua_assert(buf->data != NULL);
-    if (buf->moved) {
-        lua_pushnil(L);
-    } else {
-        dup = (wrk_buffer *) lua_newuserdata(L, sizeof(wrk_buffer));
-        memcpy(dup, buf, sizeof(wrk_buffer));
-        dup->data = (char *) malloc(buf->cap);
-        if (dup->data == NULL) {
-            return luaL_error(L, "malloc wrk.buffer failed");
-        }
-        memcpy(dup->data, buf->data, buf->cap);
+    assert(buf->data != NULL);
+
+    dup = (wrk_buffer *) lua_newuserdata(L, sizeof(wrk_buffer));
+    memcpy(dup, buf, sizeof(wrk_buffer));
+    dup->data = (char *) malloc(buf->cap);
+    if (dup->data == NULL) {
+        return luaL_error(L, "malloc wrk.buffer failed");
     }
+    memcpy(dup->data, buf->data, buf->cap);
 
     return 1;
 }
@@ -183,7 +179,7 @@ static int wrk_buffer_used(lua_State *L) {
     wrk_buffer *buf;
 
     buf = (wrk_buffer *) luaL_checkudata(L, 1, "wrk.buffer");
-    lua_assert(buf->data != NULL);
+    assert(buf->data != NULL);
     lua_pushinteger(L, buf->used);
 
     return 1;
@@ -193,14 +189,14 @@ static int wrk_buffer_release(lua_State *L) {
     wrk_buffer  *buf;
 
     buf = (wrk_buffer *)luaL_checkudata(L, 1, "wrk.buffer");
-    lua_assert(buf->data != NULL);
-    if (!buf->moved) {
+    assert(buf->data != NULL);
+
+    if (buf->data) {
         free(buf->data);
         buf->data = NULL;
-        buf->cap = -1;
-        buf->used = -1;
-        buf->moved = 1;
     }
+    buf->cap = -1;
+    buf->used = -1;
 
     return 0;
 }
@@ -209,8 +205,8 @@ static int wrk_buffer_tostring(lua_State *L) {
     wrk_buffer *buf;
 
     buf = (wrk_buffer *)luaL_checkudata(L, 1, "wrk.buffer");
-    lua_assert(buf->data != NULL);
-    lua_pushfstring(L, "buffer(cap %d, used %d, moved %d)", buf->cap, buf->used, buf->moved);
+    assert(buf->data != NULL);
+    lua_pushfstring(L, "buffer(cap %d, used %d)", buf->cap, buf->used);
 
     return 1;
 }
@@ -337,20 +333,22 @@ void script_request(lua_State *L, char **buf, size_t *len) {
     switch(lua_type(L, -1)) {
         case LUA_TSTRING:
             str = lua_tolstring(L, -1, len);
-            *buf = realloc(*buf, *len);
-            memcpy(*buf, str, *len);
             break;
         case LUA_TUSERDATA:
             wbuf = (wrk_buffer *)luaL_checkudata(L, -1, "wrk.buffer");
-            lua_assert(wbuf->data != NULL && wbuf->moved != 1);
-            wbuf->moved = 1;
-            *buf = wbuf->data;
+            assert(wbuf->data != NULL);
+            str = wbuf->data;
             *len = wbuf->used;
             break;
         default:
             fprintf(stderr, "request must return string or wrk.buffer\n");
             exit(-1);
     }
+
+    *buf = realloc(*buf, *len);
+    assert(*buf != NULL);
+    memcpy(*buf, str, *len);
+
     lua_pop(L, pop);
 }
 
